@@ -258,7 +258,8 @@ static void runAll(void) {
   self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
   UIViewController *root = [UIViewController new];
   root.view.backgroundColor = [UIColor blackColor];
-  UILabel *lab = [[UILabel alloc] initWithFrame:CGRectInset(UIScreen.mainScreen.bounds, 16, 80)];
+  CGRect b = UIScreen.mainScreen.bounds;
+  UILabel *lab = [[UILabel alloc] initWithFrame:CGRectMake(16, 80, b.size.width - 32, b.size.height - 160)];
   lab.text = @"israce v3\nreplicating the trigger\nphone may reboot if it hits";
   lab.textColor = [UIColor greenColor];
   lab.numberOfLines = 0;
