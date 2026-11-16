@@ -178,6 +178,7 @@ static void *probeThread(void *arg) {
 }
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
+@property (nonatomic, strong) UIWindow *window;
 @end
 @implementation AppDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
