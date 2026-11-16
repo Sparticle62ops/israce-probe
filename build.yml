@@ -1,0 +1,24 @@
+name: build-israce
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build unsigned ipa
+        run: |
+          xcodebuild -version
+          mkdir -p Payload/israce.app
+          clang -arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+            -framework UIKit -framework IOKit -framework CoreFoundation -framework IOSurface \
+            -fobjc-arc main.m -o Payload/israce.app/israce
+          cp Info.plist Payload/israce.app/Info.plist
+          mkdir -p Payload/israce.app/_CodeSignature 2>/dev/null || true
+          zip -r israce-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: israce-unsigned-ipa
+          path: israce-unsigned.ipa
