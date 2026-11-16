@@ -77,6 +77,7 @@ static IOSurfaceRef_ mkSurface(void) {
 
 // ---- IOKit ----
 static io_service_t gSvc = 0;
+static int openConn(io_connect_t *out) { return IOServiceOpen(gSvc, mach_task_self(), 0, out); }
 static mach_port_t newWakePort(void) {
   mach_port_t p = MACH_PORT_NULL;
   if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &p) != KERN_SUCCESS) return MACH_PORT_NULL;
