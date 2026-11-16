@@ -19,6 +19,7 @@ kern_return_t IOServiceOpen(io_object_t, task_t, uint32_t, io_connect_t *);
 kern_return_t IOObjectRelease(io_object_t);
 kern_return_t IOConnectCallAsyncMethod(mach_port_t, uint32_t, mach_port_t, uint64_t *, uint32_t,
     const void *, size_t, const void *, size_t, void *, size_t *, void *, size_t *);
+kern_return_t IOServiceClose(io_connect_t);
 
 typedef struct __IOSurface *IOSurfaceRef;
 extern IOSurfaceRef IOSurfaceCreate(CFDictionaryRef);
@@ -61,7 +62,7 @@ static int runProbe(void) {
     if (!svc) { fprintf(gLog, "ERR no IOSurfaceRoot\n"); fflush(gLog); return -1; }
     uint64_t in[3] = { 1, 2, 3 };
     uint64_t ref = 0x1122334455667788ull;
-    uint32_t soc = 0;
+    size_t soc = 0;
     pthread_t th[4];
 
     for (int iter = 0; iter < 200; iter++) {
@@ -108,7 +109,6 @@ static void *probeThread(void *arg) {
 }
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
-@property (strong) UIWindow *window;
 @end
 @implementation AppDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
