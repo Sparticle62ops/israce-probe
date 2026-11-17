@@ -41,8 +41,8 @@ static void ND(NSString *line) {
   pthread_mutex_lock(&gMx); fprintf(gNd, "%s\n", line.UTF8String); fflush(gNd); pthread_mutex_unlock(&gMx);
 }
 static void beginCase(NSString *k) { ND([NSString stringWithFormat:@"{\"k\":\"%@\",\"ph\":\"begin\",\"t\":%.3f}", k, nowSec()]); }
-static void endCase(NSString *k, NSString *f) { ND([NSString stringWithFormat:@"{\"k\":\"%@\",\"ph\":\"end\",\"t\":%.3f%@", k, nowSec(), f ? f : @""]); gEnds++; }
-static void noteEvent(NSString *ev, NSString *f) { ND([NSString stringWithFormat:@"{\"k\":\"@%@\",\"ph\":\"note\",\"t\":%.3f%@", ev, nowSec(), f ? f : @""]); }
+static void endCase(NSString *k, NSString *f) { ND([NSString stringWithFormat:@"{\"k\":\"%@\",\"ph\":\"end\",\"t\":%.3f%@}", k, nowSec(), f ? f : @""]); gEnds++; }
+static void noteEvent(NSString *ev, NSString *f) { ND([NSString stringWithFormat:@"{\"k\":\"@%@\",\"ph\":\"note\",\"t\":%.3f%@}", ev, nowSec(), f ? f : @""]); }
 
 // ---- IOSurface private API ----
 typedef struct __IOSurface *IOSurfaceRef_;
@@ -131,10 +131,12 @@ static int runLockdeg(int iter) {
   IOSurfaceRef_ s = mkSurface();
   if (!s) { IOServiceClose(c); dropPort(wp); return -102; }
   gRun = 1; gOps = 0;
+  gOps++;  // the registration above counts as this case's first IOKit op
   pthread_t th[4];
   for (int i = 0; i < 4; i++) pthread_create(&th[i], NULL, spamLock, s);
   usleep(200 + (iter % 40) * 25);
   IOServiceClose(c);            // crash point per research
+  gOps++;
   usleep(300);
   gRun = 0;
   for (int i = 0; i < 4; i++) pthread_join(th[i], NULL);
@@ -149,10 +151,12 @@ static int runRace1(int iter) {
   kern_return_t r = regAsync(c, wp);
   if (r != KERN_SUCCESS) { L(@"race1 i%d reg rc=0x%x", iter, r); IOServiceClose(c); dropPort(wp); return (int)r; }
   gConn = c; gConnWp = wp; gRun = 1; gOps = 0;
+  gOps++;  // the registration above counts as this case's first IOKit op
   pthread_t th[6];
   for (int i = 0; i < 6; i++) pthread_create(&th[i], NULL, spamReg, NULL);
   usleep(150 + (iter % 50) * 20);
   IOServiceClose(c);
+  gOps++;
   usleep(700);
   gRun = 0;
   for (int i = 0; i < 6; i++) pthread_join(th[i], NULL);
@@ -172,6 +176,7 @@ static int runPostclose(int iter) {
   rcs[2] = (uint32_t)regAsync(c, wp);
   rcs[3] = (uint32_t)regAsync(c, wp);
   rcs[4] = (uint32_t)deregSync(c, wp);
+  gOps += 5;  // postclose makes five IOKit calls per case
   mach_port_deallocate(mach_task_self(), c);
   dropPort(wp);
   L(@"postclose i%d rc=0x%x/0x%x/0x%x/0x%x/0x%x", iter, rcs[0], rcs[1], rcs[2], rcs[3], rcs[4]);
