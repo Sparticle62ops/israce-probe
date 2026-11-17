@@ -38,11 +38,18 @@ static void L(NSString *fmt, ...) {
 }
 static void ND(NSString *line) {
   if (!gNd) return;
-  pthread_mutex_lock(&gMx); fprintf(gNd, "%s\n", line.UTF8String); fflush(gNd); pthread_mutex_unlock(&gMx);
+  pthread_mutex_lock(&gMx); fprintf(gNd, "%s\n", line.UTF8String); fflush(gNd);
+  int nfd = fileno(gNd); if (nfd >= 0) fsync(nfd); pthread_mutex_unlock(&gMx);
 }
 static void beginCase(NSString *k) { ND([NSString stringWithFormat:@"{\"k\":\"%@\",\"ph\":\"begin\",\"t\":%.3f}", k, nowSec()]); }
 static void endCase(NSString *k, NSString *f) { ND([NSString stringWithFormat:@"{\"k\":\"%@\",\"ph\":\"end\",\"t\":%.3f%@}", k, nowSec(), f ? f : @""]); gEnds++; }
 static void noteEvent(NSString *ev, NSString *f) { ND([NSString stringWithFormat:@"{\"k\":\"@%@\",\"ph\":\"note\",\"t\":%.3f%@}", ev, nowSec(), f ? f : @""]); }
+
+// stage checkpoint: fsynced so a kernel wedge cannot eat it
+static void CKPT(NSString *stage) {
+  noteEvent(@"ckpt", [NSString stringWithFormat:@",\"stage\":\"%@\"", stage]);
+  if (gNd) { int fd = fileno(gNd); if (fd >= 0) fsync(fd); }
+}
 
 // ---- IOSurface private API ----
 typedef struct __IOSurface *IOSurfaceRef_;
@@ -202,6 +209,7 @@ static void loadDone(void) {
 
 static const double kStartBudget = 100.0;   // seconds of case-running before wrapping up
 static void runAll(void) {
+  CKPT(@"calib-start");
   // calibrate: sync must fail (0xE00002C2), async must succeed
   {
     io_connect_t c = 0; mach_port_t wp = newWakePort();
@@ -214,6 +222,7 @@ static void runAll(void) {
       IOServiceClose(c); dropPort(wp);
     } else { noteEvent(@"abort", @",\"why\":\"open failed\""); return; }
   }
+  CKPT(@"calib-done");
   struct { int v, it; const char *tag; } plan[] = {
     { 2, 40,  "postclose" },
     { 0, 200, "lockdeg" },
@@ -259,13 +268,14 @@ static void runAll(void) {
   gDoc = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
   gLog = fopen([[gDoc stringByAppendingPathComponent:@"israce.log"] UTF8String], "w");
   gNd = fopen([[gDoc stringByAppendingPathComponent:@"israce.ndjson"] UTF8String], "a");
+  CKPT(@"launch");
   L(@"probe v3 start t=%.3f doc=%@", nowSec(), gDoc);
   self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
   UIViewController *root = [UIViewController new];
   root.view.backgroundColor = [UIColor blackColor];
   CGRect b = UIScreen.mainScreen.bounds;
   UILabel *lab = [[UILabel alloc] initWithFrame:CGRectMake(16, 80, b.size.width - 32, b.size.height - 160)];
-  lab.text = @"israce v3\nreplicating the trigger\nphone may reboot if it hits";
+  lab.text = @"israce v3.2 ckpts\nreplicating the trigger\nphone may reboot if it hits";
   lab.textColor = [UIColor greenColor];
   lab.numberOfLines = 0;
   lab.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
@@ -275,9 +285,11 @@ static void runAll(void) {
   self.window.rootViewController = root;
   [self.window makeKeyAndVisible];
   loadDone();
+  CKPT(@"resume-loaded");
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     @autoreleasepool {
       loadIOSurface();
+      CKPT(@"syms");
       const char *cand[] = { "IOSurfaceRoot", "IOCoreSurfaceRoot", "IOSurface", NULL };
       for (int i = 0; cand[i] && !gSvc; i++) {
         CFMutableDictionaryRef m = IOServiceMatching(cand[i]);
@@ -290,6 +302,7 @@ static void runAll(void) {
         if (first) gSvc = first;
       }
       L(@"svc=0x%x", (uint32_t)gSvc);
+      CKPT(@"svc");
       if (!gSvc) { noteEvent(@"abort", @",\"why\":\"no IOSurfaceRoot service\""); self.label.text = @"no IOSurfaceRoot service"; return; }
       runAll();
       if (!gStop) {
