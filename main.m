@@ -264,7 +264,9 @@ static void runAll(void) {
     }
     noteEvent(@"phase.done", [NSString stringWithFormat:@",\"tag\":\"%s\",\"t\":%.2f", plan[p].tag, nowSec()]);
     L(@"phase %s done at %.2fs", plan[p].tag, nowSec());
+    }
   }
+  noteEvent(@"sweep.done", [NSString stringWithFormat:@",\"passes\":%d,\"ran\":%d", gPass, gCaseRan]);
 }
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
