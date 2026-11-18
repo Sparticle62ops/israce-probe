@@ -12,6 +12,7 @@
 #import <pthread.h>
 #import <sys/time.h>
 #import <unistd.h>
+#import <fcntl.h>
 #import <IOKit/IOReturn.h>
 #import <IOKit/IOKitLib.h>
 
