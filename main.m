@@ -268,14 +268,16 @@ static void runAll(void) {
   gDoc = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
   gLog = fopen([[gDoc stringByAppendingPathComponent:@"israce.log"] UTF8String], "w");
   gNd = fopen([[gDoc stringByAppendingPathComponent:@"israce.ndjson"] UTF8String], "a");
+  // v3.3: fsync the Documents DIRECTORY once so the files' directory entries are durable across a kernel reset
+  { int dfd = open([gDoc UTF8String], O_RDONLY); if (dfd >= 0) { fsync(dfd); close(dfd); } }
   CKPT(@"launch");
-  L(@"probe v3 start t=%.3f doc=%@", nowSec(), gDoc);
+  L(@"probe v3.3 start t=%.3f doc=%@", nowSec(), gDoc);
   self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
   UIViewController *root = [UIViewController new];
   root.view.backgroundColor = [UIColor blackColor];
   CGRect b = UIScreen.mainScreen.bounds;
   UILabel *lab = [[UILabel alloc] initWithFrame:CGRectMake(16, 80, b.size.width - 32, b.size.height - 160)];
-  lab.text = @"israce v3.2 ckpts\nreplicating the trigger\nphone may reboot if it hits";
+  lab.text = @"israce v3.3 ckpts\nreplicating the trigger\nphone may reboot if it hits";
   lab.textColor = [UIColor greenColor];
   lab.numberOfLines = 0;
   lab.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
