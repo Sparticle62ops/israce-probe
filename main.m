@@ -138,8 +138,7 @@ static int runLockdeg(int iter, int nth) {
   if (r != KERN_SUCCESS) { L(@"lockdeg i%d reg rc=0x%x", iter, r); IOServiceClose(c); dropPort(wp); return (int)r; }
   IOSurfaceRef_ s = mkSurface();
   if (!s) { IOServiceClose(c); dropPort(wp); return -102; }
-  gRun = 1; gOps = 0;
-  gOps++;  // the registration above counts as this case's first IOKit op
+  gRun = 1;
   if (nth < 2) nth = 2; if (nth > 8) nth = 8;
   pthread_t th[8];
   for (int i = 0; i < nth; i++) pthread_create(&th[i], NULL, spamLock, s);
@@ -159,8 +158,7 @@ static int runRace1(int iter, int nth) {
   if (openConn(&c) != KERN_SUCCESS) { dropPort(wp); return -100; }
   kern_return_t r = regAsync(c, wp);
   if (r != KERN_SUCCESS) { L(@"race1 i%d reg rc=0x%x", iter, r); IOServiceClose(c); dropPort(wp); return (int)r; }
-  gConn = c; gConnWp = wp; gRun = 1; gOps = 0;
-  gOps++;  // the registration above counts as this case's first IOKit op
+  gConn = c; gConnWp = wp; gRun = 1;
   if (nth < 4) nth = 4; if (nth > 8) nth = 8;
   pthread_t th[8];
   for (int i = 0; i < nth; i++) pthread_create(&th[i], NULL, spamReg, NULL);
@@ -247,6 +245,7 @@ static void runAll(void) {
         NSString *key = [NSString stringWithFormat:@"P%03d-%s-I%04d", gPass, plan[p].tag, i];
         if ([gDone containsObject:key]) continue;
         gPhase = plan[p].v;
+        gOps = 0;  // v3.5: every case starts its own op count so ops:0 means the case truly did nothing
         beginCase(key);
         gCaseRan++;
         uint64_t t0 = nowNs();
@@ -283,13 +282,13 @@ static void runAll(void) {
   // v3.3: fsync the Documents DIRECTORY once so the files' directory entries are durable across a kernel reset
   { int dfd = open([gDoc UTF8String], O_RDONLY); if (dfd >= 0) { fsync(dfd); close(dfd); } }
   CKPT(@"launch");
-  L(@"probe v3.4 sweep start t=%.3f doc=%@", nowSec(), gDoc);
+  L(@"probe v3.5 sweep start t=%.3f doc=%@", nowSec(), gDoc);
   self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
   UIViewController *root = [UIViewController new];
   root.view.backgroundColor = [UIColor blackColor];
   CGRect b = UIScreen.mainScreen.bounds;
   UILabel *lab = [[UILabel alloc] initWithFrame:CGRectMake(16, 80, b.size.width - 32, b.size.height - 160)];
-  lab.text = @"israce v3.4 sweep\n64 passes x 340 cases\nphone may reboot if it hits";
+  lab.text = @"israce v3.5 sweep\n64 passes x 340 cases\nphone may reboot if it hits";
   lab.textColor = [UIColor greenColor];
   lab.numberOfLines = 0;
   lab.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
