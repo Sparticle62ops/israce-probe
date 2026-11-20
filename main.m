@@ -341,8 +341,8 @@ static void loadResumeInfo(void) {
   if (!ls) return;
   for (NSString *line in ls) {
     if (line.length == 0) continue;
-    NSRange rb = [line rangeOfString:@"\",\"ph\":\"begin\""]];
-    NSRange re = [line rangeOfString:@"\",\"ph\":\"end\""]];
+    NSRange rb = [line rangeOfString:@"\",\"ph\":\"begin\""];
+    NSRange re = [line rangeOfString:@"\",\"ph\":\"end\""];
     if (rb.location != NSNotFound) {
       NSRange rk = [line rangeOfString:@"\"k\":\""];
       if (rk.location != NSNotFound) {
